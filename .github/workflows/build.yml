@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK and site
 on:
   workflow_dispatch:
   push:
@@ -6,6 +6,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
       - name: Unpack project
@@ -42,3 +45,18 @@ jobs:
           name: barsu-student-apk
           path: proj/android/app/build/outputs/apk/debug/app-debug.apk
 
+      # ---------- сайт: та же страница + свежий APK для скачивания ----------
+      - name: Build site
+        working-directory: proj
+        run: |
+          node build-site.mjs
+          cp android/app/build/outputs/apk/debug/app-debug.apk site/studentu-bargu.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: proj/site
+          include-hidden-files: true
+      - name: Publish site to Cloudflare Worker
+        if: ${{ env.CLOUDFLARE_API_TOKEN != '' }}
+        working-directory: proj
+        run: npx --yes wrangler@3.99.0 deploy --name "${{ vars.CF_WORKER_NAME || 'barsu-student' }}"
