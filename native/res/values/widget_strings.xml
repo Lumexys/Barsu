@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="wd_schedule">Расписание на день со стрелками вперёд и назад</string>
-    <string name="wd_scholarship">Сколько осталось до стипендии</string>
-    <string name="wd_tasks">Домашка и дедлайны с отметкой «выполнено»</string>
-</resources>
