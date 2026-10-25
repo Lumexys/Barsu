@@ -1,0 +1,276 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Только вход через Google: анонимные аккаунты сервер не пускает
+    function signedIn() { return request.auth != null && request.auth.token.firebase.sign_in_provider == 'google.com'; }
+    function isOwner() {
+      return signedIn() && 'email' in request.auth.token
+        && request.auth.token.email == 'vgostahunorberta362@gmail.com'
+        && request.auth.token.email_verified == true;
+    }
+    function gPath(g) { return /databases/$(database)/documents/groups/$(g); }
+    function mPath(g, u) { return /databases/$(database)/documents/groups/$(g)/members/$(u); }
+    function tPath(k) { return /databases/$(database)/documents/taken/$(k); }
+    function uPath(u) { return /databases/$(database)/documents/users/$(u); }
+    function isMember(g) { return signedIn() && exists(mPath(g, request.auth.uid)); }
+    function myRole(g) { return get(mPath(g, request.auth.uid)).data.role; }
+    function isAdmin(g) { return isMember(g) && myRole(g) == 'admin'; }
+    function isDeputy(g) { return isMember(g) && myRole(g) == 'deputy'; }
+    function isHead(g) { return isMember(g) && (myRole(g) == 'admin' || myRole(g) == 'deputy'); }
+    function isMod(g) { return isMember(g) && (myRole(g) in ['admin', 'deputy', 'moderator']); }
+    function gAfter(g) { return getAfter(gPath(g)).data; }
+    function okStr(v, n) { return v is string && v.size() > 0 && v.size() <= n; }
+    function memKeys(d) { return d.keys().hasOnly(['name','role','joinedAt','sub']); }
+    function memSub(d) { return !('sub' in d) || d.sub in ['', '1', '2']; }
+    function subOf(g) { return get(mPath(g, request.auth.uid)).data.get('sub', ''); }
+    // Записи подгруппы s видят только её участники и староста/зам. Это проверяет сервер, а не приложение.
+    function canSub(g, s) { return s in ['1', '2'] && isMember(g) && (isHead(g) || subOf(g) == s); }
+    function validFile(d) {
+      return d.keys().hasOnly(['name','mime','size','data','authorUid','ts'])
+        && d.keys().hasAll(['name','mime','size','data','authorUid','ts'])
+        && okStr(d.name, 100) && okStr(d.mime, 100)
+        && d.mime.matches('^(image/.*|application/pdf|application/msword|application/vnd\\..*|text/plain)$')
+        && d.size is int && d.size > 0 && d.size <= 700000
+        && d.data is string && d.data.size() > 0 && d.data.size() <= 940000
+        && d.authorUid == request.auth.uid && d.ts == request.time;
+    }
+    function validPost(d) {
+      return d.keys().hasOnly(['type','subject','text','authorUid','authorName','ts','due','deleted','files'])
+        && d.keys().hasAll(['type','text','authorUid','authorName','ts','deleted'])
+        && d.type in ['hw','change','note']
+        && okStr(d.text, 2000) && okStr(d.authorName, 40)
+        && (!('subject' in d) || (d.subject is string && d.subject.size() <= 80))
+        && (!('due' in d) || (d.due is string && d.due.size() <= 10))
+        && (!('files' in d) || (d.files is list && d.files.size() <= 4))
+        && d.deleted is bool;
+    }
+    function validMF(d) {
+      return d.keys().hasOnly(['sid','name','mime','size','n','authorUid','authorName','ts'])
+        && d.keys().hasAll(['sid','name','mime','size','n','authorUid','authorName','ts'])
+        && okStr(d.sid, 40) && okStr(d.name, 120) && okStr(d.mime, 100) && okStr(d.authorName, 40)
+        && d.size is int && d.size > 0 && d.size <= 10485760
+        && d.n is int && d.n >= 1 && d.n <= 20
+        && d.authorUid == request.auth.uid && d.ts == request.time;
+    }
+    function validPart(d) {
+      return d.keys().hasOnly(['i','d']) && d.i is int && d.i >= 0 && d.i < 20
+        && d.d is string && d.d.size() > 0 && d.d.size() <= 700000;
+    }
+    function validQ(d) {
+      return d.keys().hasOnly(['subject','text','authorUid','authorName','ts','deleted'])
+        && d.keys().hasAll(['subject','text','authorUid','authorName','ts','deleted'])
+        && okStr(d.subject, 80) && okStr(d.text, 1000) && okStr(d.authorName, 40)
+        && d.deleted is bool;
+    }
+
+    // Владелец приложения (только ваша подтверждённая почта Google)
+    match /groups/{gid}/{document=**} {
+      allow read, write: if isOwner();
+    }
+
+    match /groups/{gid} {
+      allow list: if isOwner();
+      allow get: if isMember(gid);
+      // Одна группа на аккаунт: создавать можно, только если у аккаунта нет другой группы
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['name','adminUid','code','createdAt','key'])
+        && request.resource.data.keys().hasAll(['name','adminUid','code','createdAt','key'])
+        && request.resource.data.adminUid == request.auth.uid
+        && okStr(request.resource.data.name, 60)
+        // Одна группа БарГУ — одна группа в приложении: ключ занимается документом taken/{key}, повторно создать его нельзя
+        && okStr(request.resource.data.key, 60) && !request.resource.data.key.matches('.*/.*')
+        && existsAfter(tPath(request.resource.data.key))
+        && getAfter(tPath(request.resource.data.key)).data.gid == gid
+        && okStr(request.resource.data.code, 12)
+        && request.resource.data.createdAt == request.time
+        && (!exists(uPath(request.auth.uid)) || !('gid' in get(uPath(request.auth.uid)).data))
+        && getAfter(uPath(request.auth.uid)).data.gid == gid;
+      // Староста может удалить группу (он остался один и уходит)
+      allow delete: if isAdmin(gid);
+      // Название и код меняют староста и зам; нового старосту назначает только староста
+      allow update: if isHead(gid)
+        && request.resource.data.keys().hasOnly(['name','adminUid','code','createdAt','key'])
+        && request.resource.data.createdAt == resource.data.createdAt
+        // название и ключ группы после создания менять нельзя (у старых групп без ключа название не трогаем тоже)
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.get('key', '') == resource.data.get('key', '')
+        && okStr(request.resource.data.name, 60)
+        && okStr(request.resource.data.code, 12)
+        && (request.resource.data.adminUid == resource.data.adminUid || isAdmin(gid))
+        && exists(mPath(gid, request.resource.data.adminUid));
+
+      match /members/{uid} {
+        allow read: if isMember(gid) || (signedIn() && request.auth.uid == uid);
+        allow create: if memKeys(request.resource.data) && memSub(request.resource.data)
+          && okStr(request.resource.data.name, 40)
+          && request.resource.data.joinedAt == request.time
+          && (
+            (signedIn() && request.auth.uid == uid && request.resource.data.role == 'admin'
+              && getAfter(gPath(gid)).data.adminUid == uid)
+            ||
+            (isMod(gid) && request.resource.data.role == 'member'
+              && exists(/databases/$(database)/documents/groups/$(gid)/requests/$(uid))
+              && !exists(/databases/$(database)/documents/groups/$(gid)/banned/$(uid)))
+          );
+        allow update: if
+          (isAdmin(gid) && memKeys(request.resource.data) && memSub(request.resource.data)
+            && request.resource.data.role in ['admin','deputy','moderator','member']
+            && request.resource.data.joinedAt == resource.data.joinedAt)
+          || (isDeputy(gid) && memKeys(request.resource.data) && memSub(request.resource.data)
+            && resource.data.role in ['moderator','member']
+            && request.resource.data.role in ['moderator','member']
+            && request.resource.data.joinedAt == resource.data.joinedAt)
+          // староста/модератор переносят участника в подгруппу (не себя, не старост)
+          || (isMod(gid) && request.auth.uid != uid
+            && resource.data.role in ['moderator','member']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sub'])
+            && memSub(request.resource.data))
+          // сам участник выбирает подгруппу один раз; потом менять её могут только староста/модератор
+          || (signedIn() && request.auth.uid == uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name','sub'])
+            && okStr(request.resource.data.name, 40)
+            && memSub(request.resource.data)
+            && (request.resource.data.get('sub', '') == resource.data.get('sub', '')
+                || resource.data.get('sub', '') == ''));
+        allow delete: if isAdmin(gid)
+          || (isDeputy(gid) && resource.data.role in ['moderator','member'])
+          || (isMod(gid) && resource.data.role == 'member')
+          || (signedIn() && request.auth.uid == uid && resource.data.role != 'admin');
+      }
+
+      match /requests/{uid} {
+        allow read: if isMod(gid) || (signedIn() && request.auth.uid == uid);
+        allow create: if signedIn() && request.auth.uid == uid && !isMember(gid)
+          && !exists(/databases/$(database)/documents/groups/$(gid)/banned/$(uid))
+          && request.resource.data.keys().hasOnly(['name','ts'])
+          && okStr(request.resource.data.name, 40)
+          && request.resource.data.ts == request.time;
+        allow delete: if isMod(gid) || (signedIn() && request.auth.uid == uid);
+      }
+
+      match /banned/{uid} {
+        allow read, create, delete: if isMod(gid);
+      }
+
+      // Общие записи: читают все участники. ДЗ для всей группы может добавить любой участник,
+      // изменения пар и заметки для всех добавляют староста, зам и модераторы
+      match /posts/{pid} {
+        allow read: if isMember(gid);
+        allow create: if (isMod(gid) || (isMember(gid) && request.resource.data.type == 'hw'))
+          && validPost(request.resource.data)
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.ts == request.time
+          && request.resource.data.deleted == false;
+        allow update: if isMember(gid) && (
+          (resource.data.authorUid == request.auth.uid && validPost(request.resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text','subject','due','deleted','files']))
+          || (isMod(gid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deleted']))
+        );
+      }
+
+      // Файлы общих записей
+      match /gfiles/{fid} {
+        allow read: if isMember(gid);
+        allow create: if isMember(gid) && validFile(request.resource.data);
+        allow delete: if isMember(gid) && (resource.data.authorUid == request.auth.uid || isMod(gid));
+      }
+
+      // Записи и файлы подгрупп: только своя подгруппа (и староста/зам)
+      match /subs/{s}/posts/{pid} {
+        allow read: if canSub(gid, s);
+        allow create: if canSub(gid, s) && validPost(request.resource.data)
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.ts == request.time
+          && request.resource.data.deleted == false;
+        allow update: if canSub(gid, s) && (
+          (resource.data.authorUid == request.auth.uid && validPost(request.resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text','subject','due','deleted','files']))
+          || (isMod(gid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deleted']))
+        );
+      }
+      match /subs/{s}/files/{fid} {
+        allow read: if canSub(gid, s);
+        allow create: if canSub(gid, s) && validFile(request.resource.data);
+        allow delete: if canSub(gid, s) && (resource.data.authorUid == request.auth.uid || isMod(gid));
+      }
+
+      // Материалы: разделы и файлы. Читают все участники, создают и удаляют староста, зам и модераторы
+      match /msections/{sid} {
+        allow read: if isMember(gid);
+        allow create: if isMod(gid)
+          && request.resource.data.keys().hasOnly(['name','authorName','authorUid','ts'])
+          && request.resource.data.keys().hasAll(['name','authorName','authorUid','ts'])
+          && okStr(request.resource.data.name, 60) && okStr(request.resource.data.authorName, 40)
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.ts == request.time;
+        allow update: if isMod(gid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+          && okStr(request.resource.data.name, 60);
+        allow delete: if isMod(gid);
+      }
+      match /mfiles/{fid} {
+        allow read: if isMember(gid);
+        allow create: if isMod(gid) && validMF(request.resource.data);
+        allow delete: if isMod(gid);
+        match /parts/{pid} {
+          allow read: if isMember(gid);
+          allow create: if isMod(gid) && validPart(request.resource.data);
+          allow delete: if isMod(gid);
+        }
+      }
+
+      match /questions/{qid} {
+        allow read: if isMember(gid);
+        allow create: if isMember(gid) && validQ(request.resource.data)
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.ts == request.time
+          && request.resource.data.deleted == false;
+        allow update: if isMember(gid) && (
+          (resource.data.authorUid == request.auth.uid && validQ(request.resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text','subject','deleted']))
+          || (isMod(gid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deleted']))
+        );
+      }
+
+      match /log/{lid} {
+        allow read: if isMember(gid);
+        allow create: if isMod(gid)
+          && request.resource.data.keys().hasOnly(['text','byName','ts'])
+          && okStr(request.resource.data.text, 200)
+          && request.resource.data.ts == request.time;
+      }
+    }
+
+    // Занятые группы БарГУ. Читать список может любой вошедший (там только названия), создать запись можно один раз,
+    // менять нельзя, удаляет только владелец приложения вместе с группой
+    match /taken/{key} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['gid','name'])
+        && okStr(request.resource.data.gid, 40) && okStr(request.resource.data.name, 60)
+        && gAfter(request.resource.data.gid).adminUid == request.auth.uid
+        && gAfter(request.resource.data.gid).key == key
+        && gAfter(request.resource.data.gid).name == request.resource.data.name;
+      allow delete: if isOwner()
+        || (signedIn() && exists(gPath(resource.data.gid)) && get(gPath(resource.data.gid)).data.adminUid == request.auth.uid);
+    }
+
+    // Код приглашения: группу можно найти, только зная код; перебрать список нельзя
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['gid','name'])
+        && getAfter(gPath(request.resource.data.gid)).data.code == code
+        && (getAfter(gPath(request.resource.data.gid)).data.adminUid == request.auth.uid
+            || isHead(request.resource.data.gid));
+      allow delete: if isOwner() || isHead(resource.data.gid)
+        || (signedIn() && get(gPath(resource.data.gid)).data.adminUid == request.auth.uid);
+    }
+
+    // Личные данные («выучил», профиль)
+    match /users/{uid}/{document=**} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+  }
+}

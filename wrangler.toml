@@ -1,0 +1,27 @@
+# Воркер сайта: _worker.js обрабатывает /api/*, остальное — статические файлы из папки site.
+# Имя воркера задаётся в GitHub (переменная CF_WORKER_NAME), здесь — значение по умолчанию.
+name = "barsu-student"
+main = "site/_worker.js"
+compatibility_date = "2024-11-01"
+
+[assets]
+directory = "site"
+binding = "ASSETS"
+
+# Раздел «Игры»: хранилища Durable Objects (бесплатный тариф, SQLite).
+# GameHub — профили, рекорды, лига, подбор; GamePixel — пиксель-батл; GameRoom — комнаты для игры онлайн.
+[[durable_objects.bindings]]
+name = "GAMEHUB"
+class_name = "GameHub"
+
+[[durable_objects.bindings]]
+name = "GAMEPIXEL"
+class_name = "GamePixel"
+
+[[durable_objects.bindings]]
+name = "GAMEROOM"
+class_name = "GameRoom"
+
+[[migrations]]
+tag = "games-v1"
+new_sqlite_classes = ["GameHub", "GamePixel", "GameRoom"]
